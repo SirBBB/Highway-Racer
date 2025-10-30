@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
+    <script>
+      // #1 w pressed: playerSpeed++ 
+// #2 w released: playerSpeed-- 
+// #3 s pressed: playerSpeed-- (brake)
+// #4 a pressed: change lane left 
+// #5 d pressed: change lane right 
+// #6 r pressed (after game over): restarts game 
+// #7 mouse pressed: honking = true 
+// #8 mouse released: honking = false 
+// #9 t pressed: toggles mouse lane control mode
+// #10 moving mouse over lanes switches player if mouse mode is on
+// #11 f pressed: toggles fullscreen (centered + resizes correctly)
+
+// variables
+let player
+let enemies = []
+let trees = []
+let playerSpeed = 6
+let minSpeed = 2
+let maxSpeed = 20
+let lanes = []
+let score = 0
+let highScore = 0
+let gameOver = false
+let laneLineOffset = 0
+let honking = false
+let honkStart = 0
+let keyHoldStart = { a: 0, d: 0 }
+let hasDoubleMoved = { a: false, d: false }
+let mouseLaneMode = false
+let baseWidth = 500
+let baseHeight = 600
+let scaleFactor = 1
+
+function setup() {
+  frameRate(240)
+  createCanvas(baseWidth, baseHeight)
+  setupGame()
+}
+
+function setupGame() {
+  lanes = [150, 250, 350]
+  player = {
+    x: 250,
+    y: 500,
+    targetY: 500,
+    width: 40,
+    height: 70,
+    lane: 1,
+    targetX: 250,
+    tilt: 0,
+    targetTilt: 0
+  }
+
+  enemies = []
+  trees = []
+  for (let i = 0; i < 3; i++) enemies.push(createEnemy())
+  for (let i = 0; i < 6; i++) trees.push(createTree())
+
+  textAlign(CENTER, CENTER)
+  textSize(24)
+  fill(255)
+
+  let cnv = document.querySelector('canvas')
+  if (cnv) {
+    cnv.style.display = "block"
+    cnv.style.margin = "auto"
+    cnv.tabIndex = 0
+    cnv.focus()
+  }
+}
+
+function draw() {
+  // scale all drawing when fullscreened
+  push()
+  translate((width - baseWidth * scaleFactor) / 2, (height - baseHeight * scaleFactor) / 2)
+  scale(scaleFactor)
+
+  let delta = deltaTime / (1000 / 60)
+  background(100, 200, 100)
+
+  fill(160)
+  rectMode(CORNER)
+  rect(50, 0, 50, baseHeight)
+  rect(baseWidth - 100, 0, 50, baseHeight)
+
+  fill(80)
+  rectMode(CENTER)
+  rect(baseWidth / 2, baseHeight / 2, 300, baseHeight)
+
+  laneLineOffset += playerSpeed * delta
+  if (laneLineOffset > 40) laneLineOffset = 0
+  stroke(255)
+  strokeWeight(4)
+  for (let i = 1; i < lanes.length; i++) {
+    for (let y = -40; y < baseHeight; y += 40) {
+      line(lanes[i] - 50, y + laneLineOffset, lanes[i] - 50, y + 20 + laneLineOffset)
+    }
+  }
+  noStroke()
+
+  drawTrees(delta)
+
+  if (!gameOver) {
+    if (keyIsDown(87)) { // w
+      playerSpeed += 0.15 * delta
+      player.targetY = 480
+    } else {
+      playerSpeed -= 0.05 * delta
+      player.targetY = 500
+    }
+    if (keyIsDown(83)) { // s
+      playerSpeed -= 0.7 * delta
+      player.targetY = 520
+    }
+    playerSpeed = constrain(playerSpeed, minSpeed, maxSpeed)
+
+    handleLaneHold()
+    if (mouseLaneMode) handleMouseLaneControl()
+
+    player.x = lerp(player.x, player.targetX, 0.2)
+    player.y = lerp(player.y, player.targetY, 0.1)
+    player.tilt = lerp(player.tilt, player.targetTilt, 0.3)
+    if (abs(player.x - player.targetX) < 15) player.targetTilt = 0
+
+    if (honking) {
+      drawHeadlights()
+      checkHonkEffect()
+    }
+
+    fill(255, 0, 0)
+    rectMode(CENTER)
+    push()
+    translate(player.x, player.y)
+    rotate(radians(player.tilt))
+    rect(0, 0, player.width, player.height)
+    pop()
+
+    for (let i = enemies.length - 1; i >= 0; i--) {
+      let e = enemies[i]
+      let relativeSpeed = (playerSpeed - e.speed) * delta
+      e.y += relativeSpeed
+      e.x = lerp(e.x, lanes[e.lane], 0.2)
+      e.tilt = lerp(e.tilt || 0, e.targetTilt || 0, 0.3)
+      if (abs(e.x - lanes[e.lane]) < 10) e.targetTilt = 0
+
+      push()
+      translate(e.x, e.y)
+      rotate(radians(e.tilt || 0))
+      fill(100, 100, 255)
+      rect(0, 0, e.width, e.height)
+      pop()
+
+      if (
+        collideRectRect(
+          player.x - player.width / 2,
+          player.y - player.height / 2,
+          player.width,
+          player.height,
+          e.x - e.width / 2,
+          e.y - e.height / 2,
+          e.width,
+          e.height
+        )
+      ) {
+        gameOver = true
+        if (score > highScore) highScore = score
+      }
+
+      if (e.y > baseHeight + e.height) {
+        enemies.splice(i, 1)
+        score++
+        enemies.push(createEnemyUniqueLane())
+      }
+    }
+
+    drawHUD()
+  } else {
+    textAlign(CENTER, CENTER)
+    textSize(48)
+    fill(255, 0, 0)
+    text("game over", baseWidth / 2, baseHeight / 2 - 20)
+
+    textSize(24)
+    fill(255)
+    text("press r to restart", baseWidth / 2, baseHeight / 2 + 30)
+  }
+
+  pop()
+}
+
+function handleLaneHold() {
+  const now = millis()
+  if (keyIsDown(65) || keyIsDown(LEFT_ARROW)) {
+    if (keyHoldStart.a === 0) keyHoldStart.a = now
+    if (!hasDoubleMoved.a && now - keyHoldStart.a > 300) {
+      if (player.lane > 1) player.lane -= 2
+      else if (player.lane > 0) player.lane--
+      player.targetX = lanes[player.lane]
+      player.targetTilt = -20
+      hasDoubleMoved.a = true
+    }
+  } else {
+    keyHoldStart.a = 0
+    hasDoubleMoved.a = false
+  }
+
+  if (keyIsDown(68) || keyIsDown(RIGHT_ARROW)) {
+    if (keyHoldStart.d === 0) keyHoldStart.d = now
+    if (!hasDoubleMoved.d && now - keyHoldStart.d > 300) {
+      if (player.lane < lanes.length - 2) player.lane += 2
+      else if (player.lane < lanes.length - 1) player.lane++
+      player.targetX = lanes[player.lane]
+      player.targetTilt = 20
+      hasDoubleMoved.d = true
+    }
+  } else {
+    keyHoldStart.d = 0
+    hasDoubleMoved.d = false
+  }
+}
+
+function handleMouseLaneControl() {
+  for (let i = 0; i < lanes.length; i++) {
+    let laneX = lanes[i]
+    let leftEdge = laneX - 50
+    let rightEdge = laneX + 50
+    if (mouseX / scaleFactor > leftEdge && mouseX / scaleFactor < rightEdge) {
+      if (player.lane !== i) {
+        player.lane = i
+        player.targetX = lanes[i]
+        player.targetTilt = 10 * (i - 1)
+      }
+    }
+  }
+}
+
+function drawHeadlights() {
+  push()
+  noStroke()
+  fill(255, 255, 150, 100)
+  beginShape()
+  vertex(player.x - 15, player.y - 35)
+  vertex(player.x + 15, player.y - 35)
+  vertex(player.x + 80, player.y - 150)
+  vertex(player.x - 80, player.y - 150)
+  endShape(CLOSE)
+  pop()
+}
+
+function checkHonkEffect() {
+  if (millis() - honkStart >= 700) {
+    for (let e of enemies) {
+      let d = dist(player.x, player.y, e.x, e.y)
+      if (e.lane === player.lane && e.y < player.y && d < 200) {
+        let oldLane = e.lane
+        let available = [0, 1, 2].filter(i =>
+          i !== oldLane && !enemies.some(o => o.lane === i && abs(o.y - e.y) < 120)
+        )
+        if (available.length > 0) {
+          let newLane = random(available)
+          e.lane = newLane
+          e.targetTilt = (newLane > oldLane ? 15 : -15)
+        }
+      }
+    }
+    honkStart = millis()
+  }
+}
+
+function mousePressed() {
+  honking = true
+  honkStart = millis()
+}
+
+function mouseReleased() {
+  honking = false
+}
+
+function drawHUD() {
+  let mph = floor(playerSpeed * 10)
+  fill(30, 30, 30, 200)
+  rectMode(CORNER)
+  rect(15, 15, 160, 120, 15)
+  fill(255)
+  textSize(16)
+  textAlign(LEFT, CENTER)
+  text("speed", 30, 35)
+  text("score", 30, 70)
+  fill(0, 255, 0)
+  rect(90, 25, map(playerSpeed, minSpeed, maxSpeed, 10, 100), 8, 5)
+  fill(255)
+  text(score, 90, 70)
+
+  text("high score", 30, 90)
+  fill(255, 215, 0)
+  text(highScore, 135, 90)
+
+  fill(mouseLaneMode ? color(0, 200, 255) : color(255))
+  textAlign(CENTER)
+  text(mouseLaneMode ? "mouse mode: on" : "mouse mode: off", baseWidth / 2, 40)
+
+  if (honking) {
+    fill(255, 255, 0)
+    text("honk!", baseWidth / 2, 70)
+  }
+}
+
+function keyPressed() {
+  if (key === 'f' || key === 'F') {
+    let fs = fullscreen()
+    fullscreen(!fs)
+    setTimeout(() => {
+      let cnv = document.querySelector('canvas')
+      if (cnv) {
+        cnv.focus()
+        window.focus()
+      }
+    }, 300)
+    return
+  }
+
+  if (!gameOver) {
+    if (key === 'a' || key === 'A' || keyCode === LEFT_ARROW) {
+      if (player.lane > 0) {
+        player.lane--
+        player.targetX = lanes[player.lane]
+        player.targetTilt = -15
+      }
+    } else if (key === 'd' || key === 'D' || keyCode === RIGHT_ARROW) {
+      if (player.lane < lanes.length - 1) {
+        player.lane++
+        player.targetX = lanes[player.lane]
+        player.targetTilt = 15
+      }
+    } else if (key === 't' || key === 'T') {
+      mouseLaneMode = !mouseLaneMode
+    }
+  } else if (key === 'r' || key === 'R') restartGame()
+}
+
+function windowResized() {
+  if (fullscreen()) {
+    resizeCanvas(windowWidth, windowHeight)
+    scaleFactor = min(windowWidth / baseWidth, windowHeight / baseHeight)
+  } else {
+    resizeCanvas(baseWidth, baseHeight)
+    scaleFactor = 1
+  }
+}
+
+function createEnemyUniqueLane() {
+  let occupiedLanes = enemies.map(e => e.lane)
+  let availableLanes = lanes.map((x, idx) => idx).filter(i => !occupiedLanes.includes(i))
+  let lane = availableLanes.length === 0 ? floor(random(0, lanes.length)) : random(availableLanes)
+  return {
+    x: lanes[lane],
+    y: random(-600, -100),
+    width: 40,
+    height: 70,
+    lane,
+    speed: random(3, 8),
+    targetTilt: 0,
+    tilt: 0
+  }
+}
+
+function createEnemy() {
+  let lane = floor(random(0, lanes.length))
+  return {
+    x: lanes[lane],
+    y: random(-600, -100),
+    width: 40,
+    height: 70,
+    lane,
+    speed: random(3, 8),
+    targetTilt: 0,
+    tilt: 0
+  }
+}
+
+function restartGame() {
+  score = 0
+  enemies = []
+  trees = []
+  for (let i = 0; i < 3; i++) enemies.push(createEnemy())
+  for (let i = 0; i < 6; i++) trees.push(createTree())
+  gameOver = false
+  player.lane = 1
+  player.x = lanes[player.lane]
+  player.targetX = lanes[player.lane]
+  player.tilt = 0
+  player.targetTilt = 0
+  playerSpeed = 6
+}
+
+function createTree() {
+  let side = random(["left", "right"])
+  let x = side === "left" ? random(10, 80) : random(baseWidth - 90, baseWidth - 10)
+  return { x, y: random(-600, baseHeight), size: random(40, 60), side }
+}
+
+function drawTrees(delta) {
+  for (let i = trees.length - 1; i >= 0; i--) {
+    trees[i].y += playerSpeed * delta
+    fill(80, 40, 0)
+    rect(trees[i].x, trees[i].y, 10, 20)
+    fill(0, 150, 0)
+    ellipse(trees[i].x + 5, trees[i].y - 10, trees[i].size, trees[i].size)
+    if (trees[i].y > baseHeight + 50) {
+      trees.splice(i, 1)
+      trees.push(createTree())
+    }
+  }
+}
+
+function collideRectRect(x1, y1, w1, h1, x2, y2, w2, h2) {
+  return x1 < x2 + w2 && x1 + w1 > x2 && y1 < y2 + h2 && y1 + h1 > y2
+}
+
+    </script>
+  </head>
+  <body></body>
+</html>
